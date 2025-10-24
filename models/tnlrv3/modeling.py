@@ -19,7 +19,11 @@ else:
         BertPreTrainedModel, BertSelfOutput, BertIntermediate, \
         BertOutput, BertPredictionHeadTransform, BertPooler
 
-from transformers.file_utils import WEIGHTS_NAME
+# Transformers moved WEIGHTS_NAME; keep compatibility with both.
+try:
+    from transformers.file_utils import WEIGHTS_NAME
+except Exception:
+    from transformers.utils import WEIGHTS_NAME
 
 from .config import TuringNLRv3ForSeq2SeqConfig
 from .convert_state_dict import get_checkpoint_from_transformer_cache, state_dict_convert

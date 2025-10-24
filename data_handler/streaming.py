@@ -3,27 +3,31 @@ import logging
 import fnmatch
 import random
 import numpy as np
-import tensorflow as tf
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 import sys
 import traceback
 
+"""
+TensorFlow-free streaming utilities.
+This file replaces previous tf.data/tf.io.gfile usage with standard
+Python/Numpy implementations while keeping the same public APIs so that
+train/test dataloaders continue to work unchanged.
+"""
+
 def get_files(dirname, filename_pat="*", recursive=False):
-    if not tf.io.gfile.exists(dirname):
+    if not os.path.exists(dirname):
         logging.warning(f"no file in {dirname} !")
-        return None
+        return []
     files = []
-    print(dirname)
-    for x in tf.io.gfile.listdir(dirname):
+    for x in os.listdir(dirname):
         path = os.path.join(dirname, x)
-        if tf.io.gfile.isdir(path):
+        if os.path.isdir(path):
             if recursive:
-                files.extend(get_files(path, filename_pat))
+                files.extend(get_files(path, filename_pat, recursive=True))
         elif fnmatch.fnmatch(x, filename_pat):
             files.append(path)
-    print()
-    return files
+    return sorted(files)
 
 
 def get_worker_files(dirnames,
@@ -53,41 +57,69 @@ def get_worker_files(dirnames,
 
 class StreamReader:
     def __init__(self, data_paths, batch_size, shuffle=False, shuffle_buffer_size=1000):
-        tf.config.experimental.set_visible_devices([], device_type="GPU")
-        logging.info(f"visible_devices:{tf.config.experimental.get_visible_devices()}")
-        path_len = len(data_paths)
-
-        dataset = tf.data.Dataset.list_files(data_paths, shuffle=False).interleave(
-            lambda x: tf.data.TextLineDataset(x).map(lambda y: tf.strings.join([y, x], separator="\t")),
-            cycle_length=path_len,
-            block_length=batch_size,
-            # num_parallel_calls=min(path_len, batch_size),
-        )
-
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.prefetch(3)
-        self.next_batch = dataset.make_one_shot_iterator().get_next()
-        self.session = None
-
+        if isinstance(data_paths, (str, bytes)):
+            data_paths = [data_paths]
+        self.data_paths = list(data_paths)
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.shuffle_buffer_size = int(shuffle_buffer_size)
+        self._iter = None
+        self._end = True
 
     def reset(self):
-        # print(f"StreamReader reset(), {self.session}, pid:{threading.currentThread()}")
-        if self.session:
-            self.session.close()
-        self.session = tf.Session()
-        self.endofstream = False
+        paths = list(self.data_paths)
+        if self.shuffle:
+            random.shuffle(paths)
+
+        def line_iter():
+            for path in paths:
+                try:
+                    with open(path, 'rb') as f:  # return bytes, consistent with TF behavior
+                        if self.shuffle:
+                            # reservoir buffer for simple local shuffle per file
+                            buf = []
+                            for line in f:
+                                buf.append(line.rstrip(b"\n"))
+                                if len(buf) >= self.shuffle_buffer_size:
+                                    random.shuffle(buf)
+                                    for item in buf:
+                                        yield item
+                                    buf.clear()
+                            if buf:
+                                random.shuffle(buf)
+                                for item in buf:
+                                    yield item
+                        else:
+                            for line in f:
+                                yield line.rstrip(b"\n")
+                except FileNotFoundError:
+                    logging.warning(f"file not found: {path}")
+                    continue
+
+        def batch_iter():
+            batch = []
+            for rec in line_iter():
+                batch.append(rec)
+                if len(batch) >= self.batch_size:
+                    yield np.array(batch, dtype=object)
+                    batch = []
+            if batch:
+                yield np.array(batch, dtype=object)
+
+        self._iter = batch_iter()
+        self._end = False
 
     def get_next(self):
+        if self._iter is None:
+            self.reset()
         try:
-            ret = self.session.run(self.next_batch)
-        except tf.errors.OutOfRangeError:
-            self.endofstream = True
+            return next(self._iter)
+        except StopIteration:
+            self._end = True
             return None
-        return ret
 
     def reach_end(self):
-        # print(f"StreamReader reach_end(), {self.endofstream}")
-        return self.endofstream
+        return self._end
 
 
 class StreamSampler:
@@ -193,12 +225,16 @@ class StreamSamplerTrainForSpeedyRec:
 
     def _generate_batch(self):
         while True:
-            if len(self.data_files)>0:
+            if len(self.data_files) > 0:
                 path = self.data_files.pop(0)
-                with tf.io.gfile.GFile(path, "r") as f:
-                    market = path.split("/")[-2]
-                    for line in f:
-                        yield line.strip('\n'), market
+                market = os.path.basename(os.path.dirname(path))
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            yield line.strip('\n'), market
+                except FileNotFoundError:
+                    logging.warning(f"file not found: {path}")
+                    continue
             else:
                 self.end = True
                 break
@@ -232,24 +268,7 @@ class StreamSamplerTrainForSpeedyRec:
 
 class StreamReaderTest(StreamReader):
     def __init__(self, data_paths, batch_size, shuffle, shuffle_buffer_size=1000):
-        tf.config.experimental.set_visible_devices([], device_type="GPU")
-        # logging.info(f"visible_devices:{tf.config.experimental.get_visible_devices()}")
-        path_len = len(data_paths)
-        # logging.info(f"[StreamReader] path_len:{path_len}, paths: {data_paths}")
-        dataset = tf.data.Dataset.list_files(data_paths).interleave(
-            lambda x: tf.data.TextLineDataset(x).map(lambda y: tf.strings.join([y, x], separator="\t")),
-            cycle_length=path_len,
-            block_length=batch_size,
-            num_parallel_calls=min(path_len, batch_size),
-        )
-
-        # if shuffle:
-        #     dataset = dataset.shuffle(shuffle_buffer_size, reshuffle_each_iteration=True)
-        
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.prefetch(1)
-        self.next_batch = dataset.make_one_shot_iterator().get_next()
-        self.session = None
+        super().__init__(data_paths, batch_size, shuffle=shuffle, shuffle_buffer_size=shuffle_buffer_size)
 
 
 class StreamSamplerTest(StreamSampler):
@@ -274,4 +293,3 @@ class StreamSamplerTest(StreamSampler):
         )
         self.data_paths = data_paths
         self.stream_reader = StreamReaderTest(data_paths, batch_size, enable_shuffle, shuffle_buffer_size)
-

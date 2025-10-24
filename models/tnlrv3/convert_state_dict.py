@@ -1,7 +1,19 @@
 import torch
 import logging
 
-from transformers.modeling_utils import cached_path, WEIGHTS_NAME, TF2_WEIGHTS_NAME, TF_WEIGHTS_NAME
+# Transformers compatibility: cached_path was removed in newer versions.
+# Try modern imports first, then fall back to old locations.
+try:
+    from transformers.utils.hub import cached_file as _cached_file
+    from transformers.utils import WEIGHTS_NAME, TF2_WEIGHTS_NAME, TF_WEIGHTS_NAME
+except Exception:  # pragma: no cover - fallback for older transformers
+    try:
+        from transformers.modeling_utils import cached_path as _cached_file, WEIGHTS_NAME, TF2_WEIGHTS_NAME, TF_WEIGHTS_NAME
+    except Exception as e:  # final fallback
+        _cached_file = None
+        WEIGHTS_NAME = 'pytorch_model.bin'
+        TF2_WEIGHTS_NAME = 'tf_model.h5'
+        TF_WEIGHTS_NAME = 'model.ckpt'
 
 logger = logging.getLogger(__name__)
 
@@ -10,9 +22,11 @@ def get_checkpoint_from_transformer_cache(
         archive_file, pretrained_model_name_or_path, pretrained_model_archive_map,
         cache_dir, force_download, proxies, resume_download,
 ):
+    if _cached_file is None:
+        raise ImportError("Unable to import cached file helper from transformers; please install a compatible transformers version.")
     try:
-        resolved_archive_file = cached_path(archive_file, cache_dir=cache_dir, force_download=force_download,
-                                            proxies=proxies, resume_download=resume_download)
+        resolved_archive_file = _cached_file(archive_file, cache_dir=cache_dir, force_download=force_download,
+                                             proxies=proxies, resume_download=resume_download)
     except EnvironmentError:
         if pretrained_model_name_or_path in pretrained_model_archive_map:
             msg = "Couldn't reach server at '{}' to download pretrained weights.".format(

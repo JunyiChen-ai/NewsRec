@@ -1,10 +1,89 @@
 import argparse
-from utility import utils
 import logging
+import os
+import json
+import ast
+from utility import utils
+
+
+def _load_config_file(path):
+    """Load a YAML/JSON config file into a flat dict.
+
+    Tries PyYAML if available, then JSON, and finally a simple
+    line-based parser that supports key: value pairs and JSON-like
+    literals for lists and dicts.
+    """
+    if not path or not os.path.exists(path):
+        return {}
+    with open(path, 'r', encoding='utf-8') as f:
+        text = f.read()
+    # Try PyYAML if installed
+    try:
+        import yaml  # type: ignore
+        data = yaml.safe_load(text)
+        return data or {}
+    except Exception:
+        pass
+    # Try JSON
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    # Fallback: very simple YAML-like parser: key: value per line
+    cfg = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith('#'):
+            continue
+        if ':' not in s:
+            continue
+        key, val = s.split(':', 1)
+        key = key.strip()
+        val = val.strip()
+        # Remove inline comments
+        if ' #' in val:
+            val = val.split(' #', 1)[0].strip()
+        # Try to coerce types
+        lowered = val.lower()
+        if lowered in ('true', 'false'):
+            cfg[key] = lowered == 'true'
+            continue
+        if lowered in ('null', 'none'):
+            cfg[key] = None
+            continue
+        # Literal for list/dict or quoted string
+        if (val.startswith('[') and val.endswith(']')) or \
+           (val.startswith('{') and val.endswith('}')) or \
+           (val.startswith('"') and val.endswith('"')) or \
+           (val.startswith("'") and val.endswith("'")):
+            try:
+                cfg[key] = ast.literal_eval(val)
+                continue
+            except Exception:
+                pass
+        # Try numeric
+        try:
+            if '.' in val:
+                cfg[key] = float(val)
+            else:
+                cfg[key] = int(val)
+            continue
+        except Exception:
+            pass
+        # Fallback string
+        cfg[key] = val
+    return cfg
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    # First, parse only --config to know where to load defaults from
+    config_parser = argparse.ArgumentParser(add_help=False)
+    default_cfg = os.path.join(os.path.dirname(__file__), 'config.yaml')
+    config_parser.add_argument('--config', type=str, default=default_cfg,
+                               help='Path to YAML/JSON config file to load defaults from')
+    config_args, remaining_argv = config_parser.parse_known_args()
+
+    parser = argparse.ArgumentParser(parents=[config_parser])
     parser.add_argument(
         "--root_data_dir",
         type=str,
@@ -104,9 +183,23 @@ def parse_args():
     parser.add_argument("--test_steps", type=int, default=1000000)
     parser.add_argument("--max_hit_ratio", type=float, default=1)
 
-    args = parser.parse_args()
+    # early stopping
+    parser.add_argument("--early_stop_patience", type=int, default=3,
+                        help="Number of epochs with no improvement to wait before stopping. Set <0 to disable.")
+    parser.add_argument("--early_stop_min_delta", type=float, default=0.0,
+                        help="Minimum AUC improvement to count as better.")
+
+    # eval / test only
+    parser.add_argument("--test_only", type=utils.str2bool, default=False,
+                        help="If True, skip training and run dev evaluation once. Uses --load_ckpt_name if provided.")
+
+    # If a config is supplied, load it and set as defaults before final parse
+    cfg = _load_config_file(config_args.config)
+    if cfg:
+        # Normalize keys: replace hyphens with underscores for argparse compatibility
+        norm_cfg = {k.replace('-', '_'): v for k, v in cfg.items()}
+        parser.set_defaults(**norm_cfg)
+
+    args = parser.parse_args(remaining_argv)
     logging.info(args)
     return args
-
-
-

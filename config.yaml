@@ -1,0 +1,82 @@
+# Default training configuration for FastFormer-Rec
+# Edit values here to change behavior without long CLI args.
+
+root_data_dir: "./data/speedy_data"
+filename_pat: "ProtoBuf_*.tsv"
+model_dir: "./saved_models/"
+# npratio: 1
+npratio: 4
+enable_gpu: true
+enable_shuffle: true
+enable_prefetch: true
+num_workers: 2
+log_steps: 200
+# batch_size: 64
+batch_size: 16
+
+# Training
+epochs: 6
+lr: 0.0001
+news_attributes: ["title", "abstract"]
+num_words_title: 32
+num_words_abstract: 50
+num_words_body: 100
+user_log_length: 100
+
+# Model dims
+word_embedding_dim: 300
+# news_dim: 64
+news_dim: 256
+demo_dim: 64
+news_query_vector_dim: 200
+user_query_vector_dim: 32
+num_attention_heads: 20
+attention_dims: 20
+user_log_mask: true
+drop_rate: 0.2
+
+# Steps
+# save_steps: 100000
+save_steps: 500
+max_steps_per_epoch: 1000000
+
+# Checkpoint loading
+load_ckpt_name: null
+
+# Sharing
+title_share_encoder: false
+
+# Turing/unilm settings
+pretreained_model: "others"
+pretrained_model_path: "roberta-base"
+config-name: "unilm2-base-uncased-config.json"
+model_name_or_path: "unilm2-base-uncased.bin"
+tokenizer_name: "unilm2-base-uncased-vocab.txt"
+num_hidden_layers: 8
+
+use_pretrain_news_encoder: false
+freeze_pretrain_news_encoder: false
+
+# SpeedyRec extras
+warmup: false
+world_size: 1
+enable_prefetch_stream: true
+# pretrain_lr: 0.0001
+pretrain_lr: 8e-6
+beta_for_cache: 0.002
+# max_step_in_cache: 20
+max_step_in_cache: 2
+savename: "speedy"
+warmup_step: 2000
+# schedule_step: 30000
+schedule_step: 240000
+test_steps: 1000000
+# test_steps: 3000
+max_hit_ratio: 1
+
+# Evaluation-only mode
+test_only: false
+
+# Early stopping
+early_stop_patience: 5
+early_stop_min_delta: 0.0

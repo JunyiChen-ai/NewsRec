@@ -2,7 +2,13 @@ import logging
 
 import torch
 from torch import nn
-from transformers.modeling_bert import BertSelfOutput, BertIntermediate, BertOutput
+# Transformers compatibility: modeling_bert moved in v4
+try:
+    from transformers.modeling_bert import BertSelfOutput, BertIntermediate, BertOutput
+except Exception:
+    from transformers.models.bert.modeling_bert import (
+        BertSelfOutput, BertIntermediate, BertOutput
+    )
 
 class AttentionPooling(nn.Module):
     def __init__(self, config):

@@ -106,11 +106,15 @@ def train(local_rank,
         start_time = time.time()
         test_time = 0.0
         global_step = 0
-        best_count = 0
+        # Early stopping and best tracking
+        no_improve_epochs = 0
         optimizer.zero_grad()
 
         loss = 0.0
-        best_auc = 0.0
+        best_auc = float('-inf')
+        # Always overwrite the previous best checkpoint
+        best_ckpt_path = os.path.join(args.model_dir, f"{args.savename}-best.pt")
+        best_epoch = -1
         accuary = 0.0
         hit_num = 0
         all_num = 1
@@ -223,45 +227,60 @@ def train(local_rank,
 
                 if global_step%args.test_steps == 0 and local_rank == 0:
                     stest_time = time.time()
-                    auc = test(model, args, device, news_info.category_dict, news_info.subcategory_dict)
+                    auc, dev_metrics = test(model, args, device, news_info.category_dict, news_info.subcategory_dict)
                     ddp_model.train()
                     logging.info('step:{}, auc:{}'.format(global_step, auc))
+                    # Save only when validation improves; overwrite previous best
+                    if auc > best_auc:
+                        prev_best = best_auc
+                        best_auc = auc
+                        torch.save(
+                            {
+                                'model_state_dict': model.state_dict(),
+                                'optimizer': optimizer.state_dict(),
+                                'category_dict': news_info.category_dict,
+                                'subcategory_dict': news_info.subcategory_dict,
+                            }, best_ckpt_path)
+                        logging.info(
+                            f"New best AUC: {best_auc:.6f} (prev {prev_best:.6f}). Saved to {best_ckpt_path} | "
+                            f"Dev metrics -> AUC: {dev_metrics.get('AUC', 0):.6f}, "
+                            f"MRR: {dev_metrics.get('MRR', 0):.6f}, "
+                            f"nDCG@5: {dev_metrics.get('nDCG5', 0):.6f}, "
+                            f"nDCG@10: {dev_metrics.get('nDCG10', 0):.6f}")
                     test_time = test_time + time.time()-stest_time
 
-                # save model minibatch
-                if local_rank == 0 and global_step % args.save_steps == 0:
-                    ckpt_path = os.path.join(args.model_dir, f'{args.savename}-epoch-{ep + 1}-{global_step}.pt')
+
+            logging.info('epoch:{}, time:{}, encode_num:{}'.format(ep + 1, time.time() - start_time-test_time, encode_num))
+            # end-of-epoch evaluation, best-only saving and early stopping
+            if local_rank == 0:
+                auc, dev_metrics = test(model, args, device, news_info.category_dict, news_info.subcategory_dict)
+                ddp_model.train()
+
+                if auc > best_auc + getattr(args, 'early_stop_min_delta', 0.0):
+                    prev_best = best_auc
+                    best_auc = auc
+                    best_epoch = ep + 1
+                    no_improve_epochs = 0
                     torch.save(
                         {
                             'model_state_dict': model.state_dict(),
                             'optimizer': optimizer.state_dict(),
                             'category_dict': news_info.category_dict,
                             'subcategory_dict': news_info.subcategory_dict,
-                        }, ckpt_path)
-                    logging.info(f"Model saved to {ckpt_path}")
-
-            logging.info('epoch:{}, time:{}, encode_num:{}'.format(ep + 1, time.time() - start_time-test_time, encode_num))
-            # save model after an epoch
-            if local_rank == 0:
-                ckpt_path = os.path.join(args.model_dir, '{}-epoch-{}.pt'.format(args.savename, ep + 1))
-                torch.save(
-                    {
-                        'model_state_dict': model.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'category_dict': news_info.category_dict,
-                        'subcategory_dict': news_info.subcategory_dict,
-                    }, ckpt_path)
-                logging.info(f"Model saved to {ckpt_path}")
-
-                auc = test(model, args, device, news_info.category_dict, news_info.subcategory_dict)
-                ddp_model.train()
-
-                if auc>best_auc:
-                    best_auc = auc
+                        }, best_ckpt_path)
+                    logging.info(
+                        f"New best AUC (epoch {best_epoch}): {best_auc:.6f} (prev {prev_best:.6f}). Saved to {best_ckpt_path} | "
+                        f"Dev metrics -> AUC: {dev_metrics.get('AUC', 0):.6f}, "
+                        f"MRR: {dev_metrics.get('MRR', 0):.6f}, "
+                        f"nDCG@5: {dev_metrics.get('nDCG5', 0):.6f}, "
+                        f"nDCG@10: {dev_metrics.get('nDCG10', 0):.6f}")
                 else:
-                    best_count += 1
-                    if best_auc >= 3:
-                        logging.info("best_auc:{}, best_ep:{}".format(best_auc, ep-3))
+                    no_improve_epochs += 1
+                    patience = getattr(args, 'early_stop_patience', None)
+                    if patience is not None and patience >= 0 and no_improve_epochs >= patience:
+                        logging.info(
+                            f"Early stopping triggered. Patience={patience}, "
+                            f"best_epoch={best_epoch}, best_auc={best_auc:.6f}")
                         end_train.value = True
             barrier()
             if end_train.value:
@@ -337,13 +356,44 @@ def test(model, args, device, category_dict, subcategory_dict):
             results.print_metrics(0, cnt * args.batch_size, 'all users')
             results.print_metrics(0, cnt * args.batch_size, 'cold users')
 
-    return np.mean(results.metrics_dict["all users"]['AUC'])
+    # Aggregate mean metrics for 'all users'
+    metrics_mean = {}
+    for k in ["AUC", "MRR", "nDCG5", "nDCG10"]:
+        vals = results.metrics_dict.get("all users", {}).get(k, [])
+        if len(vals) > 0:
+            metrics_mean[k] = float(np.mean(vals))
+    return metrics_mean.get("AUC", 0.0), metrics_mean
 
 
 if __name__ == '__main__':
     setuplogger()
     args = parse_args()
-    ddp_train_vd(args)
 
+    if getattr(args, 'test_only', False):
+        # Evaluation-only path on dev set
+        device = get_device()
+        args = check_args_environment(args)
+        model = MLNR(args).to(device)
 
+        category_dict = None
+        subcategory_dict = None
 
+        if args.load_ckpt_name is not None and os.path.exists(args.load_ckpt_name):
+            ckpt = torch.load(args.load_ckpt_name, map_location='cpu')
+            state = ckpt.get('model_state_dict', ckpt)
+            # load with strict=False to tolerate minor key diffs
+            model.load_state_dict(state, strict=False)
+            category_dict = ckpt.get('category_dict', None)
+            subcategory_dict = ckpt.get('subcategory_dict', None)
+            logging.info(f"Loaded checkpoint from {args.load_ckpt_name}")
+        else:
+            logging.warning("No --load_ckpt_name provided or file not found; evaluating with randomly initialized model.")
+
+        auc, dev_metrics = test(model, args, device, category_dict, subcategory_dict)
+        logging.info(
+            f"Dev metrics -> AUC: {dev_metrics.get('AUC', 0):.6f}, "
+            f"MRR: {dev_metrics.get('MRR', 0):.6f}, "
+            f"nDCG@5: {dev_metrics.get('nDCG5', 0):.6f}, "
+            f"nDCG@10: {dev_metrics.get('nDCG10', 0):.6f}")
+    else:
+        ddp_train_vd(args)
