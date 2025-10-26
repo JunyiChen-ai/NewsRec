@@ -11,8 +11,8 @@ enable_shuffle: true
 enable_prefetch: true
 num_workers: 2
 log_steps: 200
-# batch_size: 64
-batch_size: 16
+batch_size: 64
+# batch_size: 16
 
 # Training
 epochs: 6
@@ -41,14 +41,14 @@ save_steps: 500
 max_steps_per_epoch: 1000000
 
 # Checkpoint loading
-load_ckpt_name: null
+load_ckpt_name: ./saved_models/speedy-ep1-step26000.pt
 
 # Sharing
 title_share_encoder: false
 
 # Turing/unilm settings
 pretreained_model: "others"
-pretrained_model_path: "roberta-base"
+pretrained_model_path: "roberta-large"
 config-name: "unilm2-base-uncased-config.json"
 model_name_or_path: "unilm2-base-uncased.bin"
 tokenizer_name: "unilm2-base-uncased-vocab.txt"
@@ -75,7 +75,7 @@ test_steps: 1000000
 max_hit_ratio: 1
 
 # Evaluation-only mode
-test_only: false
+test_only: true
 
 # Early stopping
 early_stop_patience: 5

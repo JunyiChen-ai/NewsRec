@@ -217,6 +217,24 @@ def train(local_rank,
 
                     barrier()
 
+                if (getattr(args, "save_steps", 0) and args.save_steps > 0
+                        and global_step % args.save_steps == 0 and local_rank == 0):
+                    step_ckpt_path = os.path.join(
+                        args.model_dir,
+                        f"{args.savename}-ep{ep + 1}-step{global_step}.pt")
+                    torch.save(
+                        {
+                            'model_state_dict': model.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'epoch': ep + 1,
+                            'global_step': global_step,
+                            'category_dict': news_info.category_dict,
+                            'subcategory_dict': news_info.subcategory_dict,
+                        },
+                        step_ckpt_path)
+                    logging.info(
+                        f"Saved checkpoint at epoch {ep + 1}, step {global_step}: {step_ckpt_path}")
+
                 if global_step % args.log_steps == 0:
                     logging.info(
                         '[{}] cost_time:{} step:{}, train_loss: {:.5f}, acc:{:.5f}, hit:{}, encode_num:{}, lr:{:.8f}, pretrain_lr:{:.8f}'.format(

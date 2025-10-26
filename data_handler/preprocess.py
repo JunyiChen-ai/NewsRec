@@ -38,8 +38,12 @@ class NewsInfo:
 
     def sent_tokenize(self, sent, max_len):
         assert isinstance(sent, str)
-        sent_split = self.tokenizers(sent, max_length=max_len, pad_to_max_length=True, truncation=True)
-        return sent_split
+        try:
+            # Older transformer versions expect pad_to_max_length; keep for backward compatibility.
+            return self.tokenizers(sent, max_length=max_len, pad_to_max_length=True, truncation=True)
+        except TypeError:
+            # Newer versions have removed pad_to_max_length in favour of padding='max_length'.
+            return self.tokenizers(sent, max_length=max_len, padding='max_length', truncation=True)
 
     def _parse_news_attrs(self, attr_raw_values):
         parser = {
@@ -211,4 +215,3 @@ def infer_news(model, device, news_combined, batch_size=64):
     news_vecs = np.array(news_vecs)
     logging.info("news scoring num: {}".format(news_vecs.shape[0]))
     return news_vecs
-
